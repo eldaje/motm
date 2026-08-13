@@ -229,6 +229,21 @@ summary:focus-visible{outline:2px solid var(--pale);outline-offset:-3px;border-r
 .chairbar > button.chair{width:100%}
 .chairbar option:disabled{color:#4A4038}
 @media(max-width:620px){.chairbar-row{flex-direction:column}}
+/* uniform control case */
+button,.lane{text-transform:uppercase;letter-spacing:.04em}
+/* panel controls: one row of three, above the list */
+.panel-ctl{display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin-bottom:12px}
+.panel-ctl button{padding:11px 6px}
+.sel-count{margin-left:auto;font-family:var(--mono);font-size:10.5px;letter-spacing:.18em;text-transform:uppercase;color:var(--pale)}
+#panel-card summary .chev{margin-left:12px}
+.badge.co{color:var(--pale);border-color:#3A2E22}
+.badge.vis{color:#8FB49A;border-color:#2E4636}
+.badge.strike{color:var(--bad);border-color:#4A2620}
+.attach-row{display:flex;gap:8px;align-items:center;margin-top:9px;flex-wrap:wrap}
+.attach-row button{flex:0 0 auto}
+.attach-chip{display:inline-flex;align-items:center;gap:8px;font-family:var(--mono);font-size:11px;border:1px solid var(--line);border-radius:99px;padding:6px 12px;color:var(--bone)}
+.attach-chip button{background:transparent;border:0;color:var(--bad);padding:0 2px;font-size:13px}
+#cost-est{font-family:var(--mono);font-size:11px;color:var(--ash);margin-top:9px;min-height:14px}
 </style>
 </head>
 <body>
@@ -266,21 +281,27 @@ summary:focus-visible{outline:2px solid var(--pale);outline-offset:-3px;border-r
     <label id="lane-label">Lane</label>
     <div id="lanes" class="lanes"></div>
     <textarea id="q" placeholder="What goes to every expert..."></textarea>
+    <div class="attach-row">
+      <button id="attach" class="ghost" type="button">Attach</button>
+      <input id="attach-in" type="file" hidden accept="image/png,image/jpeg,image/webp,image/gif,.txt,.md,.csv,.json,.js,.py,.html,.css,.xml,.yaml,.yml,.log,.tsv">
+      <span id="attach-chip" class="attach-chip" hidden></span>
+    </div>
     <div class="bar">
       <button id="run">Convene</button>
       <button id="cancel" class="warn" disabled>Cancel</button>
     </div>
+    <div id="cost-est"></div>
     <div id="run-msg" class="msg"></div>
   </div>
 
   <details class="card" id="panel-card" open>
-    <summary class="step"><span class="step-n">01</span><h2 class="step-t">The panel</h2><span class="chev" aria-hidden="true"></span></summary>
-    <div id="experts" class="experts"><p class="note" style="margin:0">Add your key in settings, then load the experts.</p></div>
-    <div class="bar">
-      <button id="load" class="ghost">Load experts</button>
-      <button id="diverse" class="ghost">Seat a diverse panel</button>
+    <summary class="step"><span class="step-n">01</span><h2 class="step-t">The panel</h2><span id="sel-count" class="sel-count" hidden></span><span class="chev" aria-hidden="true"></span></summary>
+    <div class="panel-ctl">
+      <button id="load" class="ghost">Load</button>
+      <button id="diverse" class="ghost">Diverse</button>
       <button id="clear-sel" class="ghost">Clear</button>
     </div>
+    <div id="experts" class="experts"><p class="note" style="margin:0">Add your key in settings, then load the experts.</p></div>
     <p class="note">One model per vendor family, no Venice house models, never the chair's own family. Shared lineage means shared blind spots.</p>
   </details>
 
@@ -288,12 +309,19 @@ summary:focus-visible{outline:2px solid var(--pale);outline-offset:-3px;border-r
     <p class="chairbar-h">The panel has reported. Pick a chair.</p>
     <div class="chairbar-row">
       <select id="chair" disabled aria-label="In-app chair"><option>Load experts first</option></select>
-      <button id="chair-go" disabled>Chair it here</button>
+      <button id="chair-go" disabled>Chair</button>
     </div>
-    <button id="copy-brief" class="chair" disabled>Copy brief for Claude</button>
+    <button id="copy-brief" class="chair" disabled>Copy brief</button>
+    <div id="challenge-wrap" hidden style="margin-top:12px">
+      <textarea id="challenge" placeholder="Add context, push back, or challenge the verdict..." style="min-height:80px"></textarea>
+      <div class="bar">
+        <button id="challenge-chair" class="chair">Challenge chair</button>
+        <button id="challenge-diss" class="ghost">Debate dissenter</button>
+      </div>
+    </div>
     <p class="note" id="chair-note">Chairing here uses a Venice model. The brief gets you the Claude that has your skills, project and search — same family, very different chair.</p>
     <div class="bar">
-      <button id="export" class="ghost" disabled>Export run</button>
+      <button id="export" class="ghost" disabled>Export</button>
       <button id="clear-res" class="ghost">Clear results</button>
     </div>
   </div>
@@ -418,26 +446,46 @@ const $=id=>document.getElementById(id);
 const out=$("out");
 
 let controller=null, transcript="", brief="", models=[];
+let ATT=null, lastChair=null, runCost=0;
+const XKEY="motm_strikes";
+const strikes=()=>{ try{ return JSON.parse(localStorage.getItem(XKEY))||{}; }catch{ return {}; } };
+const strike=(id,ok)=>{ try{ const s=strikes();
+  if(ok){ if(s[id]){ delete s[id]; localStorage.setItem(XKEY,JSON.stringify(s)); } return; }
+  s[id]=(s[id]||0)+1; localStorage.setItem(XKEY,JSON.stringify(s)); }catch{} };
+const flaky=id=>(strikes()[id]||0)>=2;
 
 /* ================= lanes ================= */
 const DEFAULT_LANES=[
   {id:"straight", name:"Straight", prefix:""},
-  {id:"cts", name:"Cut the shit", prefix:
+  {id:"cts", name:"/cts", prefix:
 "Answer the question directly. Lead with the answer itself, not with what you're about to do. No preamble, no restating the question, no framework, no numbered process unless the answer genuinely is a sequence. If a one-line answer is correct, give one line. After the answer you may add up to three sentences of reasoning. Nothing else."},
-  {id:"build", name:"Build it", prefix:
+  {id:"build", name:"Build", prefix:
 "Treat this as an engineering question. Say what you would actually build, name the thing that breaks first, and quantify effort against payoff. If the request is more work than it is worth, say so and say why. Always give the cheapest version that gets most of the value, alongside the full version. Do not declare something impossible without naming exactly what you checked."},
-  {id:"stress", name:"Stress test", prefix:
+  {id:"stress", name:"Stress", prefix:
 "Before answering, attack the premise. Name the strongest objection to the question as asked and say whether it is fatal. Then answer, and end by naming the specific evidence that would prove your answer wrong. Do not hedge to cover both sides — commit, and accept being wrong."},
-  {id:"teach", name:"Teach me", prefix:
+  {id:"teach", name:"Teach", prefix:
 "Explain from first principles to someone sharp who does not know this field. Define any term the first time you use it. Use one concrete example carried all the way through rather than several shallow ones. Say plainly which parts are settled and which are contested."}
 ];
 let lanes=[], laneSel="straight";
 
+DEFAULT_LANES.push(
+  {id:"design", name:"Design", prefix:
+"Treat this as a design question. Propose the strongest single direction: name the core concept in one line, then the key decisions and what each one trades away. One opinionated direction beats a menu of options. End with the one thing most likely to make this design fail."},
+  {id:"theorize", name:"Theorize", prefix:
+"Treat this as a thought experiment. Reason from first principles, state your assumptions explicitly, and follow the logic wherever it leads. Flag speculation and rank it by confidence. End with the single most decision-relevant unknown."});
 function loadLanes(){
   try{ const raw=localStorage.getItem(LKEY); lanes=raw?JSON.parse(raw):DEFAULT_LANES.slice(); }
   catch{ lanes=DEFAULT_LANES.slice(); }
   if(!Array.isArray(lanes)||!lanes.length) lanes=DEFAULT_LANES.slice();
   if(!lanes.some(l=>l.id==="straight")) lanes.unshift({id:"straight",name:"Straight",prefix:""});
+  const RN={"Cut the shit":"/cts","Build it":"Build","Stress test":"Stress","Teach me":"Teach"};
+  let mig=false;
+  lanes.forEach(l=>{ if(RN[l.name]){ l.name=RN[l.name]; mig=true; } });
+  if(!localStorage.getItem("motm_lanes_v2")){
+    DEFAULT_LANES.forEach(d=>{ if(!lanes.some(l=>l.id===d.id)){ lanes.push({...d}); mig=true; } });
+    try{ localStorage.setItem("motm_lanes_v2","1"); }catch{}
+  }
+  if(mig) try{ localStorage.setItem(LKEY,JSON.stringify(lanes)); }catch{}
   laneSel=localStorage.getItem(LSEL)||"straight";
   if(!lanes.some(l=>l.id===laneSel)) laneSel="straight";
 }
@@ -664,8 +712,31 @@ async function ask(model,messages){
   if(typeof content!=="string") content=JSON.stringify(content);
   content=content.replace(/<think>[\s\S]*?<\/think>/gi,"").trim();
   if(!content) throw new Error(`Empty response (finish_reason: ${c?.finish_reason||"unknown"}). If it's a reasoning model, raise or clear max tokens.`);
-  return {content,ms};
+  return {content,ms,usage:data?.usage||null};
 }
+
+/* ----- cost: Venice public rates, USD per 1M tokens ----- */
+const priceOf=id=>{ const m=models.find(x=>mid(x)===id); const p=m?.model_spec?.pricing; return p?{i:p.input?.usd||0,o:p.output?.usd||0}:null; };
+const costOf=(id,usage)=>{ const p=priceOf(id); if(!p||!usage) return null;
+  return ((usage.prompt_tokens||0)*p.i+(usage.completion_tokens||0)*p.o)/1e6; };
+const fmt$=v=>v==null?"$?":(v<0.01?"$"+v.toFixed(4):"$"+v.toFixed(2));
+function estimateCost(){
+  const el=$("cost-est"); if(!el) return;
+  const picked=[...document.querySelectorAll(".pm:checked")].map(b=>b.value);
+  if(!picked.length||!models.length){ el.textContent=""; return; }
+  const qTok=Math.ceil(($("q").value.length+(ATT&&ATT.kind==="text"?ATT.text.length:0))/4)+(ATT&&ATT.kind==="image"?1100:0);
+  const outTok=Math.min(parseInt($("maxtok").value,10)||1200,4000);
+  const doRev=$("review").checked&&picked.length>1;
+  let est=0;
+  picked.forEach(id=>{ const p=priceOf(id); if(!p) return;
+    est+=(qTok*p.i+outTok*p.o)/1e6;
+    if(doRev) est+=((qTok+picked.length*outTok)*p.i+300*p.o)/1e6;
+  });
+  el.textContent=est?`Estimated panel cost ~${fmt$(est)}${doRev?" incl. review":""} — chair billed after, shown here.`:"";
+}
+function selCount(){ const el=$("sel-count"); if(!el) return;
+  const n=document.querySelectorAll(".pm:checked").length;
+  el.hidden=!models.length; el.textContent=n+" seated"; }
 
 async function pool(items,limit,fn,onEach){
   const res=new Array(items.length); let next=0;
@@ -680,7 +751,8 @@ async function pool(items,limit,fn,onEach){
 const mid=m=>m.id||m.model||m.name;
 const mlabel=m=>m.name||m.model_spec?.name||m.id||m.model;
 const mctx=m=>m.model_spec?.availableContextTokens||m.model_spec?.contextTokens||0;
-const family=id=>String(id).split(/[-_.:\/]/)[0].toLowerCase();
+const FAM_ALIAS={gemma:"google",gemini:"google",google:"google",zai:"zai",z:"zai",olafangensan:"zai",glm:"zai",qwen:"qwen",qwen2:"qwen",qwen3:"qwen",grok:"xai",xai:"xai",llama:"meta",meta:"meta",mistral:"mistral",mixtral:"mistral",magistral:"mistral",deepseek:"deepseek",kimi:"moonshot",moonshotai:"moonshot",minimax:"minimax",nvidia:"nvidia",nemotron:"nvidia",aion:"aion",seed:"bytedance",doubao:"bytedance",xiaomi:"xiaomi",mimo:"xiaomi",mercury:"inception",gpt:"openai",openai:"openai",oss:"openai",claude:"anthropic",anthropic:"anthropic",hermes:"nous",nous:"nous",phi:"microsoft",command:"cohere",yi:"01ai",exaone:"lg",falcon:"tii",jamba:"ai21",dbrx:"databricks",solar:"upstage"};
+const family=id=>{ const s=String(id).toLowerCase().replace(/^e2ee-/,""); const f=s.split(/[-_.:\/]/)[0]; return FAM_ALIAS[f]||f; };
 
 const caps=m=>m.model_spec?.capabilities||{};
 const traits=m=>m.model_spec?.traits||[];
@@ -696,6 +768,7 @@ function tier(m){
   return "general";
 }
 function eligible(m){
+  if(ATT&&ATT.kind==="image"&&!caps(m).supportsVision) return false;
   const t=tier(m);
   if(t==="offline") return false;
   if($("f-all").checked) return true;
@@ -732,11 +805,11 @@ function renderExperts(){
   $("experts").innerHTML="";
   if(!usable.length){ $("experts").innerHTML='<p class="note" style="margin:0">Nothing passes the current filters. Loosen them in settings.</p>'; }
   usable.forEach(m=>{
-    const id=mid(m),ctx=mctx(m),t=tier(m),r=caps(m).supportsReasoning;
+    const id=mid(m),ctx=mctx(m),t=tier(m),c=caps(m),r=c.supportsReasoning,fam=family(id),priv=/^e2ee-/.test(String(id).toLowerCase()),flk=strikes()[id]||0;
     const l=document.createElement("label");
     l.className="expert"+(t!=="general"?" house":"");
     l.innerHTML=`<input type="checkbox" class="pm" value="${esc(id)}" data-label="${esc(mlabel(m))}"${keep.has(id)?" checked":""}>
-      <span><span class="e-name">${esc(mlabel(m))}${r?'<span class="badge">reasons</span>':""}${t!=="general"?`<span class="badge dim">${t}</span>`:""}</span>
+      <span><span class="e-name">${esc(mlabel(m))}<span class="badge co">${esc(fam)}</span>${c.supportsVision?'<span class="badge vis">vision</span>':""}${r?'<span class="badge">reasons</span>':""}${c.optimizedForCode?'<span class="badge dim">code</span>':""}${c.supportsFunctionCalling?'<span class="badge dim">tools</span>':""}${c.supportsWebSearch?'<span class="badge dim">web</span>':""}${priv?'<span class="badge vis">private</span>':""}${t!=="general"?`<span class="badge dim">${t}</span>`:""}${flk>=2?'<span class="badge strike">flaky</span>':""}</span>
       <span class="e-id">${esc(id)}${ctx?" · "+(ctx/1000).toFixed(0)+"k":""}</span></span>`;
     $("experts").appendChild(l);
   });
@@ -782,6 +855,7 @@ function diversePanel(){
   const byFam=new Map();
   models.filter(eligible).forEach(m=>{
     const id=mid(m),fam=family(id);
+    if(flaky(id)) return;
     if(chairFam&&fam===chairFam&&skipChair) return;
     const p=byFam.get(fam);
     if(!p||mctx(m)>mctx(p)) byFam.set(fam,m);
@@ -794,6 +868,7 @@ function diversePanel(){
 }
 
 function syncRing(){
+  selCount(); estimateCost();
   const n=document.querySelectorAll(".pm:checked").length||4;
   ringDraw(n);
   ringSay("Panel idle", n===1
@@ -805,6 +880,72 @@ $("load").onclick=loadExperts;
 $("diverse").onclick=diversePanel;
 $("clear-sel").onclick=()=>{ document.querySelectorAll(".pm").forEach(b=>b.checked=false); syncRing(); syncChairOptions(); };
 $("experts").addEventListener("change",()=>{ syncRing(); syncChairOptions(); });
+$("q").addEventListener("input",estimateCost);
+$("review").addEventListener("change",estimateCost);
+
+/* ----- attachments: images go to vision models, text rides along ----- */
+const uContent=t=>ATT&&ATT.kind==="image"?[{type:"image_url",image_url:{url:ATT.data}},{type:"text",text:t}]:t;
+function renderAttach(){
+  const c=$("attach-chip");
+  if(!ATT){ c.hidden=true; c.innerHTML=""; return; }
+  c.hidden=false;
+  c.innerHTML=`${esc(ATT.name)} · ${ATT.kind==="image"?"vision only":"inlined"} <button type="button" aria-label="Remove attachment">✕</button>`;
+  c.querySelector("button").onclick=()=>{ ATT=null; renderAttach(); if(models.length) renderExperts(); else estimateCost(); };
+}
+$("attach").onclick=()=>$("attach-in").click();
+$("attach-in").onchange=async e=>{
+  const f=e.target.files&&e.target.files[0]; e.target.value=""; if(!f) return;
+  const isImg=/^image\//.test(f.type);
+  try{
+    if(isImg){
+      if(f.size>4.5*1024*1024) throw new Error("Image too large — keep it under ~4.5 MB.");
+      const data=await new Promise((res,rej)=>{ const r=new FileReader();
+        r.onload=()=>res(r.result); r.onerror=()=>rej(new Error("Couldn't read the file.")); r.readAsDataURL(f); });
+      ATT={kind:"image",name:f.name,data};
+    }else{
+      if(f.size>400*1024) throw new Error("Text file too large — keep it under ~400 KB.");
+      const text=await f.text();
+      if(/\u0000/.test(text.slice(0,2000))) throw new Error(`Can't inline ${f.name} — only images and plain-text files work here. PDFs and Office files aren't supported by the API.`);
+      ATT={kind:"text",name:f.name,text};
+    }
+    renderAttach();
+    if(models.length) renderExperts(); else estimateCost();
+    say(ATT.kind==="image"?"Image attached — only vision-capable models can sit this run.":"File attached — its text rides along with the question.","ok");
+  }catch(err){ say(err.message||String(err),"err"); }
+};
+
+/* ----- challenge the chair / debate the dissenter ----- */
+async function challenge(target){
+  const txt=$("challenge").value.trim();
+  if(!txt) return say("Write the challenge first.","err");
+  if(!lastRun||!lastChair) return say("Chair a run first.","err");
+  const rows=lastRun.rows;
+  const diss=rows&&rows.length>1?rows[rows.length-1]:null;
+  const dAns=diss?lastRun.answers.find(a=>a.letter===diss.letter):null;
+  const model=target==="diss"?(dAns?dAns.model:null):lastChair.model;
+  if(!model) return say("No dissenter on record — that needs a reviewed run with 2+ answers.","err");
+  const parts=[`Original question:\n${lastRun.q}`,`Chair's verdict (${lastChair.model}):\n${lastChair.content}`];
+  if(target==="diss") parts.push(`Your original answer (ranked last by the panel):\n${dAns.content}`);
+  parts.push(`The human moderator now ${target==="diss"?"asks you to defend or revise your dissent, given":"challenges this verdict with"} the following:\n${txt}`,
+    target==="diss"
+      ?"Respond directly. Defend your position with your strongest reasoning, or concede exactly what the new context changes. Be concrete."
+      :"Reconsider the verdict in light of this. Defend it point by point, or revise it and state exactly what changed and why.");
+  const prompt=parts.join("\n\n---\n\n");
+  $("challenge-chair").disabled=$("challenge-diss").disabled=true;
+  controller=new AbortController();
+  try{
+    const fin=await ask(model,[{role:"user",content:uContent(prompt)}]);
+    if(fin.usage) runCost+=costOf(model,fin.usage)||0;
+    card("",`${target==="diss"?"Dissenter responds":"Chair responds"} — ${model}`,fin.content,target==="diss"?"rev":"chairres",`${(fin.ms/1000).toFixed(1)}s`);
+    runLog.push("-".repeat(72),`CHALLENGE (${target==="diss"?"dissenter":"chair"}: ${model})`,"-".repeat(72),"",txt,"","RESPONSE:","",fin.content,"");
+    transcript=runLog.join("\n");
+    if($("cost-est")&&runCost) $("cost-est").textContent=`Actual run cost ~${fmt$(runCost)}.`;
+    say("Challenge answered.","ok");
+  }catch(e2){ say(e2?.message||String(e2),"err"); }
+  finally{ controller=null; $("challenge-chair").disabled=$("challenge-diss").disabled=false; }
+}
+$("challenge-chair").onclick=()=>challenge("chair");
+$("challenge-diss").onclick=()=>challenge("diss");
 $("chair").onchange=()=>localStorage.setItem(CKEY,$("chair").value);
 $("f-all").onchange=$("f-reason").onchange=()=>{
   if(!models.length) return msg("filter-msg","Load the experts first.","warn");
@@ -908,8 +1049,10 @@ async function convene(){
   if(!q) return say("Add a question first.","err");
   if(!picked.length) return say("Seat at least one expert.","err");
   
-  const L0=lane(); const framed=L0.prefix?`${L0.prefix}\n\n---\n\n${q}`:q;
+  const L0=lane(); let framed=L0.prefix?`${L0.prefix}\n\n---\n\n${q}`:q;
+  if(ATT&&ATT.kind==="text") framed=`${framed}\n\n--- ATTACHED FILE: ${ATT.name} ---\n\n${ATT.text}`;
   out.innerHTML=""; transcript=""; brief=""; $("after-bar").hidden=true;
+  $("challenge-wrap").hidden=true; $("challenge").value=""; lastChair=null; runCost=0;
   $("export").disabled=$("copy-run").disabled=$("copy-brief").disabled=true;
   $("run").disabled=true; $("cancel").disabled=false;
   controller=new AbortController();
@@ -933,8 +1076,10 @@ async function convene(){
     let landed=0;
     ringSay("Answering","No expert can see another. This is the only stage where that's true.");
     say(`0/${picked.length} in.`);
-    const s1=await pool(picked,limit,async m=>({model:m,...await ask(m,[{role:"user",content:framed}])}),
-      (r,i)=>{ landed++; ringNode(i,r.ok?"done":"fail"); say(`${landed}/${picked.length} in.`); });
+    const s1=await pool(picked,limit,async m=>({model:m,...await ask(m,[{role:"user",content:uContent(framed)}])}),
+      (r,i)=>{ landed++; strike(picked[i],r.ok);
+        if(r.ok&&r.v.usage) runCost+=costOf(picked[i],r.v.usage)||0;
+        ringNode(i,r.ok?"done":"fail"); say(`${landed}/${picked.length} in.`); });
 
     if(controller.signal.aborted) throw new Error("Cancelled.");
 
@@ -964,8 +1109,9 @@ async function convene(){
       let rl=0; say(`0/${answers.length} reviews in.`);
       const rp=reviewPrompt(q,answers);
       const s2=await pool(answers.map(a=>a.model),limit,
-        async m=>({model:m,...await ask(m,[{role:"user",content:rp}])}),
-        ()=>{ rl++; say(`${rl}/${answers.length} reviews in.`); });
+        async m=>({model:m,...await ask(m,[{role:"user",content:uContent(rp)}])}),
+        (r)=>{ rl++; if(r.ok&&r.v.usage) runCost+=costOf(r.v.model,r.v.usage)||0;
+          say(`${rl}/${answers.length} reviews in.`); });
       ringArc(false);
       if(controller.signal.aborted) throw new Error("Cancelled.");
 
@@ -1001,10 +1147,12 @@ async function convene(){
     $("after-bar").hidden=false;
     ringSay("Panel reported","Nobody has adjudicated yet. Pick a chair — here, or in a Claude conversation.");
 
+    if(runCost) L(`RUN COST (panel${doRev?" + review":""}): ~${fmt$(runCost)} — Venice public rates`,"");
     L("=".repeat(72),`END — ${((performance.now()-t0)/1000).toFixed(1)}s`,"=".repeat(72),"");
     transcript=log.join("\n");
     runLog=log;
-    saveRun(started,q,transcript);
+    saveRun(started,q,transcript,runCost);
+    if($("cost-est")&&runCost) $("cost-est").textContent=`Actual panel cost ~${fmt$(runCost)} — chair not run yet.`;
     $("export").disabled=$("copy-run").disabled=false;
     say(`Panel done in ${((performance.now()-t0)/1000).toFixed(1)}s. ${answers.length}/${picked.length} answered. Pick a chair below.`,"ok");
 
@@ -1066,9 +1214,9 @@ async function copy(text,label){
 function readRuns(){ try{ const r=localStorage.getItem(HKEY); return r?JSON.parse(r):[]; }catch{ return []; } }
 // Drop oldest until the write fits — otherwise one full quota means every
 // future run silently fails to save.
-function saveRun(date,q,text){
+function saveRun(date,q,text,cost){
   const h=readRuns();
-  h.push({ts:date.toISOString(),prompt:q.slice(0,400),transcript:text});
+  h.push({ts:date.toISOString(),prompt:q.slice(0,400),cost:cost||0,transcript:text});
   while(h.length>CAP) h.shift();
   let dropped=0;
   while(h.length){
@@ -1116,12 +1264,17 @@ async function runChair(){
     ringCore(true);
     ringSay("Chair reading",motm?"Naming one winner, not writing a new answer.":"Adjudicating — keeping what's right, cutting what isn't.");
     say(`Chair reading${ctx?` (~${est.toLocaleString()} of ~${ctx.toLocaleString()} tokens)`:""}...`);
-    const fin=await ask(chair,[{role:"user",content:brief}]);
+    const fin=await ask(chair,[{role:"user",content:uContent(brief)}]);
+    if(fin.usage) runCost+=costOf(chair,fin.usage)||0;
     card("",`Chair — ${chair}`,fin.content,"chairres",`${(fin.ms/1000).toFixed(1)}s${motm?" · Man of the Match":""}`);
     ringSay("Chaired",motm?"One answer named, unedited.":"One answer, adjudicated.");
     say(`Chaired in ${((performance.now()-t0)/1000).toFixed(1)}s.`,"ok");
     runLog.push("=".repeat(72),`CHAIR (${chair}, ${(fin.ms/1000).toFixed(1)}s)${motm?" — Man of the Match":""}`,"=".repeat(72),"",fin.content,"");
     transcript=runLog.join("\n");
+    lastChair={model:chair,content:fin.content};
+    $("challenge-wrap").hidden=false;
+    if($("cost-est")&&runCost) $("cost-est").textContent=`Actual run cost ~${fmt$(runCost)} incl. chair.`;
+    try{ const h=readRuns(); if(h.length){ h[h.length-1].cost=runCost; localStorage.setItem(HKEY,JSON.stringify(h)); } }catch{}
   }catch(e){
     const m=e?.message||String(e);
     ringCore(false); ringSay("Chair failed",m);
